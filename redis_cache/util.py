@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 
 from django.utils.encoding import smart_unicode, smart_str
+from redis import ConnectionPool as RedisConnectionPool
+from redis.connection import UnixDomainSocketConnection, Connection
+from redis.connection import DefaultParser
+
+from collections import defaultdict
+
 
 class CacheKey(object):
     """
@@ -32,17 +38,11 @@ class Singleton(type):
     def __init__(cls, name, bases, dct):
         cls.__instance = None
         type.__init__(cls, name, bases, dct)
- 
+
     def __call__(cls, *args, **kw):
         if cls.__instance is None:
             cls.__instance = type.__call__(cls, *args,**kw)
         return cls.__instance
-
-
-from collections import defaultdict
-from redis import ConnectionPool as RedisConnectionPool
-from redis.connection import UnixDomainSocketConnection, Connection
-from redis.connection import DefaultParser
 
 
 class ConnectionPoolHandler(object):
@@ -60,7 +60,7 @@ class ConnectionPoolHandler(object):
 
         connection_class = kwargs['unix_socket_path'] \
             and UnixDomainSocketConnection or Connection
-        
+
         params = {
             'connection_class': connection_class,
             'parser_class': parser_class,
@@ -73,7 +73,7 @@ class ConnectionPoolHandler(object):
             params['path'] = kwargs['unix_socket_path']
         else:
             params['host'], params['port'] = kwargs['host'], kwargs['port']
-        
+
         connection_pool = RedisConnectionPool(**params)
         self.pools[pool_key] = connection_pool
         return connection_pool

@@ -17,9 +17,77 @@ from collections import defaultdict
 
 from redis import Redis
 from redis.connection import DefaultParser
+from redis import ConnectionPool
+from redis.connection import UnixDomainSocketConnection, Connection
+from redis.connection import DefaultParser
+
 from .util import CacheKey, ConnectionPoolHandler
 
 import re
+
+
+class DummyRouter(object):
+    def __init__(self, servers, keys):
+        self._servers = servers
+        self._keys = keys
+
+        self.default_server = self._servers[keys[0]]
+
+    def get_for_write(self):
+        return self.default_server
+
+    def get_for_read(self):
+        return self.default_server
+
+
+class Client(object):
+    def __init__(self, server, params):
+        self._server = server
+        self._params = params
+        self._options = params.get('OPTIONS', {})
+
+        self._serverdict = self.connect()
+        self._serverkeys = tuple(self._servers.keys())
+
+        if len(self._serverkeys) == 1:
+            router_cls = DummyRouter
+        else:
+            raise NotImplementedError()
+
+        self._router = router_cls(self._serverdict, self._serverkeys)
+
+    def connect(self):
+        unix_socket_path = None
+
+        if not isinstance(self._server, (list, tuple)):
+            self._server = [self._server]
+
+        servers = {}
+
+        for connection_string in set(self._server):
+            try:
+                host, port, db = connection_string.split(":")
+                port = int(port) if host == "unix" else port
+                db = int(db)
+
+            except (ValueError, TypeError):
+                raise ImproperlyConfigured("Incorrect format '%s'" % (server))
+
+            kwargs = {
+                "db": db,
+                "password": self._options.get('PASSWORD', None),
+            }
+
+            if host == "unix":
+                kwargs.update({'path': port, 'connection_class': UnixDomainSocketConnection})
+            else:
+                kwargs.update({'host': host, 'port': port, 'connection_class': Connection})
+
+            connection_pool = ConnectionPool(**kwargs)
+            servers[connection_string] = Redis(connection_pool=connection_pool)
+
+        return servers
+
 
 class RedisCache(BaseCache):
     _pickle_version = -1
@@ -28,43 +96,6 @@ class RedisCache(BaseCache):
         """
         Connect to Redis, and set up cache backend.
         """
-        self._init(server, params)
-
-    def _connect(self):
-        unix_socket_path = None
-        if ':' in self._server:
-            host, port = self._server.split(':')
-            try:
-                port = int(port)
-            except (ValueError, TypeError):
-                raise ImproperlyConfigured("port value must be an integer")
-
-        else:
-            host, port = None, None
-            unix_socket_path = self._server
-
-        # parse database
-        _db = self._params.get('db', self._options.get('DB', 1))
-        try:
-            _db = int(_db)
-        except (ValueError, TypeError):
-            raise ImproperlyConfigured("db value must be an integer")
-
-        # params for connection pool.
-        kwargs = {
-            'db': _db,
-            'password': self.password,
-            'host': host,
-            'port': port,
-            'unix_socket_path': unix_socket_path,
-        }
-
-        connection_pool = ConnectionPoolHandler()\
-            .connection_pool(parser_class=self.parser_class, **kwargs)
-        self._client = Redis(connection_pool=connection_pool)
-
-    def _init(self, server, params):
-        super(RedisCache, self).__init__(params)
         self._server = server
         self._params = params
         self._options = params.get('OPTIONS', {})
@@ -75,7 +106,6 @@ class RedisCache(BaseCache):
             except (ValueError, TypeError):
                 raise ImproperlyConfigured("PICKLE_VERSION value must be an integer")
 
-        self._connect()
 
     def make_key(self, key, version=None):
         if not isinstance(key, CacheKey):
@@ -128,12 +158,6 @@ class RedisCache(BaseCache):
         except ImportError as e:
             raise ImproperlyConfigured("Could not find module '%s'" % e)
         return parser_class
-
-    def __getstate__(self):
-        return {'params': self._params, 'server': self._server}
-
-    def __setstate__(self, state):
-        self._init(**state)
 
     def close(self, **kwargs):
         for c in self._client.connection_pool._available_connections:
